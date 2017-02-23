@@ -1,2 +1,2 @@
 # mpi
-Test repository for MPI tests.
+Test repository for MPI coding.
