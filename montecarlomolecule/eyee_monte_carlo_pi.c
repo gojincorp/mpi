@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <math.h>
 #include <mpi.h>
 #include <time.h>
@@ -44,24 +45,37 @@ double distanceSquared(double pointA[DIMENSIONS], double pointB[DIMENSIONS])
 	return result;
 } 
 
+/*
+ * Structure for sphere attributes 
+ */
 typedef struct mystruct
 {
-	double radius;
-	double x;
-	double y;
-	double z;
+	double radius;	// radius of sphere
+	double x;	// x coordinate of center of sphere
+	double y;	// y coordinate of center of sphere
+	double z;	// z coordinate of center of sphere
 } sphere;
 
+/*
+ * Structure for bounding box attributes 
+ */
 typedef struct
 {
-	double x_min;
-	double x_max;
-	double y_min;
-	double y_max;
-	double z_min;
-	double z_max;
+	double x_min;	// minimum x coordinate
+	double x_max;	// maximum x coordinate
+	double y_min;	// minimum y coordinate
+	double y_max;	// maximum y coordinate
+	double z_min;	// minimum z coordinate
+	double z_max;	// maximum z coordinate
 } boundingBox;
 
+/*
+ * Main function 
+ *
+ * @param int argc: count of parameters 
+ * @param int[] argv: array of parameters 
+ * @return int: return 0 on success 
+ */
 int main(int argc, char ** arcv)
 {
 	MPI_Status status;
@@ -71,7 +85,9 @@ int main(int argc, char ** arcv)
 	int scatter_sum = 0;
 	int * scatter_count_arr, * scatter_disp;
 	sphere * spheres, * recv_spheres;
-	boundingBox bb = {DBL_MAX,DBL_MIN,DBL_MAX,DBL_MIN,DBL_MAX,DBL_MIN};
+	boundingBox bb = {DBL_MAX,-DBL_MAX,DBL_MAX,-DBL_MAX,DBL_MAX,-DBL_MAX};
+	double bbVol;
+	double ** samples;
 
 	// Local variables
 	int scatter_count; 
@@ -147,6 +163,7 @@ int main(int argc, char ** arcv)
 	// Divide spheres amoung processes
 	MPI_Scatterv(spheres, scatter_count_arr, scatter_disp, my_mpi_type, recv_spheres, scatter_count, my_mpi_type, 0, MPI_COMM_WORLD); 
 
+	// Calculate local bounding box
 	MPI_Barrier(MPI_COMM_WORLD);
 	for (i = 0; i < scatter_count; i++)
 	{
@@ -159,16 +176,112 @@ int main(int argc, char ** arcv)
 		bb.z_min = MIN(bb.z_min, (recv_spheres[i].z - recv_spheres[i].radius));
 		bb.z_max = MAX(bb.z_max, (recv_spheres[i].z + recv_spheres[i].radius)); 
 	}
+	MPI_Barrier(MPI_COMM_WORLD);
+	if (scatter_count)
+		printf("Rank#%d bounding box: x(%f,%f) y(%f,%f) z(%f,%f)\n", comm_rank, bb.x_min, bb.x_max, bb.y_min, bb.y_max, bb.z_min, bb.z_max);
+
+	// Calculate global bounding box 
+	MPI_Reduce(comm_rank ? &bb.x_min : MPI_IN_PLACE, &bb.x_min, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);	
+	MPI_Reduce(comm_rank ? &bb.x_max : MPI_IN_PLACE, &bb.x_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);	
+	MPI_Reduce(comm_rank ? &bb.y_min : MPI_IN_PLACE, &bb.y_min, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);	
+	MPI_Reduce(comm_rank ? &bb.y_max : MPI_IN_PLACE, &bb.y_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);	
+	MPI_Reduce(comm_rank ? &bb.z_min : MPI_IN_PLACE, &bb.z_min, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);	
+	MPI_Reduce(comm_rank ? &bb.z_max : MPI_IN_PLACE, &bb.z_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);	
+	MPI_Barrier(MPI_COMM_WORLD);
+	if (0 == comm_rank)
+		printf("Global bounding box: x(%f,%f) y(%f,%f) z(%f,%f)\n", comm_rank, bb.x_min, bb.x_max, bb.y_min, bb.y_max, bb.z_min, bb.z_max);
+
+	// Calculate bounding box volume
+	bbVol = (bb.x_max - bb.x_min) * (bb.y_max - bb.y_min) * (bb.z_max - bb.z_min);
+
+	// Generate random sample
+/*
+	if (0 == comm_rank)
+	{
+		srand(time(NULL) * 1362);
+		//samples = (double **)malloc(sizeof(double *) * sample_count + (sizeof(double) * sample_count * 3));
+		samples = (double **)malloc(sizeof(double *) * sample_count);
+		samples[0] = (double *)malloc(sizeof(double) * 3 * sample_count);
+		//samples = malloc(sizeof(double *) * sample_count);
+		//samples = calloc(sample_count, sizeof(double *));
+		for (i = 0; i < sample_count; i++)
+		{
+			samples[i] = (*samples + 3 * i);
+			samples[i][0] = get_rand(bb.x_min, bb.x_max);
+			samples[i][1] = get_rand(bb.y_min, bb.y_max);
+			samples[i][2] = get_rand(bb.z_min, bb.z_max);
+			printf("Sample #%d (%p | %p | %p | %p | %p): %f %f %f\n", i, &samples, samples, &samples[i], samples[i], &samples[i][0], samples[i][0], samples[i][1], samples[i][2]);
+		}	
+	}
+*/
+	srand(time(NULL) * 1362);
+	samples = (double **)malloc(sizeof(double *) * sample_count);
+	samples[0] = (double *)malloc(sizeof(double) * 3 * sample_count);
+	for (i = 0; i < sample_count; i++)
+	{
+		samples[i] = (*samples + 3 * i);
+		if (0 == comm_rank)
+		{
+			samples[i][0] = get_rand(bb.x_min, bb.x_max);
+			samples[i][1] = get_rand(bb.y_min, bb.y_max);
+			samples[i][2] = get_rand(bb.z_min, bb.z_max);
+			//printf("Sample #%d (%p | %p | %p | %p | %p): %f %f %f\n", i, &samples, samples, &samples[i], samples[i], &samples[i][0], samples[i][0], samples[i][1], samples[i][2]);
+		}
+	}	
+
+	// Broadcast samples
+	MPI_Bcast(samples[0], 3 * sample_count, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
 	MPI_Barrier(MPI_COMM_WORLD);
-	printf("Rank#%d bounding box: x(%f,%f) y(%f,%f) z(%f,%f)\n", comm_rank, bb.x_min, bb.x_max, bb.y_min, bb.y_max, bb.z_min, bb.z_max);
 
+	// Evaluate sample intersection with local spheres
+	bool hit[sample_count];
+	double distSqrd;
+	for (i = 0; i < sample_count; i++)
+	{
+		hit[i] = false;
+		for (j = 0; j < scatter_count; j++)
+		{
+			distSqrd = distanceSquared(samples[i],(double[]){recv_spheres[j].x, recv_spheres[j].y, recv_spheres[j].z});
+			hit[i] = (distSqrd < recv_spheres[j].radius * recv_spheres[j].radius) ? true : false;
+/*
+			if (distSqrd < recv_spheres[j].radius * recv_spheres[j].radius)
+				printf("Rank#%d | Point(%f,%f,%f) | Sphere(%f | %f,%f,%f)\n", comm_rank, samples[i][0], samples[i][1], samples[i][2], recv_spheres[j].radius, recv_spheres[j].x, recv_spheres[j].y, recv_spheres[j].z); 
+*/
+		}
+	}
+	int testCount = 0;
+	for (i = 0; i < sample_count; i++)
+	{
+		if (hit[i])
+			testCount++;
+	}
+
+	// Merge hit data
+	MPI_Reduce(comm_rank ? hit : MPI_IN_PLACE, hit, sample_count, MPI_C_BOOL, MPI_LOR, 0, MPI_COMM_WORLD);
+
+	// Estimate volume
+	MPI_Barrier(MPI_COMM_WORLD);
+	if (0 == comm_rank)
+	{
+		int hitCount = 0;
+		for (i = 0; i < sample_count; i++)
+		{
+			if (hit[i])
+				hitCount++;
+		}
+		double moleculeVol = bbVol * ((double)hitCount / (double)sample_count);
+		printf("Rank#%d | hits = %d/%d | bbVol = %f |  moleculeVol = %f\n", comm_rank, testCount, hitCount, bbVol, moleculeVol);
+	}
+ 
 	MPI_Finalize();
 	if (0 == comm_rank)
 	{
 		free(scatter_count_arr);
 		free(scatter_disp);
 		free(spheres);
+		free(samples[0]);
+		free(samples);
 	}
 	free(recv_spheres);
 
