@@ -7,16 +7,16 @@
 #define MAXSTRING 20 
 
 void permute(int * char_set, int skip, int noskip, char * permute_str, int level, int maxLevel, unsigned long * counter);
-void permuteNew(int * char_set, unsigned long local_permute_start, unsigned long * local_permute_total, char * permute_str, int level, int maxLevel, unsigned long * counter, unsigned long * permute_counter_arr, unsigned long * permute_counter_branch);
+void permuteNew(int * char_set, unsigned long local_permute_start, unsigned long * local_permute_total, char * permute_str, int level, int maxLevel, unsigned long * counter, unsigned long * permute_counter_arr1, unsigned long * permute_counter_branch1);
 
 int main(int argc, char ** argv)
 {
 	MPI_Status mpi_status;
 	int		comm_size, comm_rank;
 	char		in_str[MAXSTRING];
-	int		char_counter[TOTALLETTERS];
+	int		char_counter1[TOTALLETTERS], char_counter2[TOTALLETTERS];
 	char		* permute_str;
-	unsigned long	* permute_counter_arr, * permute_counter_branch;
+	unsigned long	* permute_counter_arr1, * permute_counter_branch1, * permute_counter_arr2, * permute_counter_branch2;
 	int		i, j, temp, str_len;
 	unsigned long	permute_count = 0;
 	double		timer1, timer2;
@@ -68,12 +68,15 @@ int main(int argc, char ** argv)
 		permutations = 0;
 		for (i = 0; i < TOTALLETTERS; i++)
 		{
-			char_counter[i] = 0;
+			char_counter1[i] = 0;
+			char_counter2[i] = 0;
 		}
 
 		// Tally up count for each character and keep track of how many are unique
-		permute_counter_arr = malloc(sizeof(unsigned long) * str_len + 1);
-		permute_counter_branch = malloc(sizeof(unsigned long) * str_len + 1);
+		permute_counter_arr1 = malloc(sizeof(unsigned long) * str_len + 1);
+		permute_counter_branch1 = malloc(sizeof(unsigned long) * str_len + 1);
+		permute_counter_arr2 = malloc(sizeof(unsigned long) * str_len + 1);
+		permute_counter_branch2 = malloc(sizeof(unsigned long) * str_len + 1);
 		total_unique_char = 0;
 		for (i = 0; i < str_len; i++)
 		{
@@ -84,34 +87,41 @@ int main(int argc, char ** argv)
 				permutations = str_len;
 
 			// Unique character found
-			if (!char_counter[in_str[i] - ZERO])
+			if (!char_counter1[in_str[i] - ZERO])
 				total_unique_char++;	
 
 			// Tally up count for each character
-			char_counter[in_str[i] - ZERO]++;		
+			char_counter1[in_str[i] - ZERO]++;		
+			char_counter2[in_str[i] - ZERO]++;		
 
 			// Initialize arrays passed to permuteNew() function
-			permute_counter_arr[i] = 0;
-			permute_counter_branch[i] = 0;
+			permute_counter_arr1[i] = 0;
+			permute_counter_branch1[i] = 0;
+			permute_counter_arr2[i] = 0;
+			permute_counter_branch2[i] = 0;
 		}		
-		permute_counter_arr[str_len] = 0;
-		permute_counter_branch[str_len] = 0;
+		permute_counter_arr1[str_len] = 0;
+		permute_counter_branch1[str_len] = 0;
+		permute_counter_arr2[str_len] = 0;
+		permute_counter_branch2[str_len] = 0;
 
 		// Need to check for repeated characters and divide permutations accordingly
 		temp = 1;
 		for (i = 0; i < TOTALLETTERS; i++)
 		{
-			if (char_counter[i] > 1)
+			if (char_counter1[i] > 1)
 			{
-				for (j = char_counter[i]; j > 0; j--)
+				for (j = char_counter1[i]; j > 0; j--)
 				{
 					temp *= j; 
 				}	
 			}
 		}
 		permutations /= temp;
-		permute_counter_arr[0] = permutations;
-		permute_counter_branch[0] = permutations;
+		permute_counter_arr1[0] = permutations;
+		permute_counter_branch1[0] = permutations;
+		permute_counter_arr2[0] = permutations;
+		permute_counter_branch2[0] = permutations;
 		MPI_Barrier(MPI_COMM_WORLD);
 		if (0 == comm_rank)
 			printf("Calculated total permutations = %lu\n", permutations);
@@ -150,24 +160,27 @@ int main(int argc, char ** argv)
 		noskip = (total_unique_char/comm_size) + (comm_rank < (total_unique_char%comm_size)) ? 1 : 0;
 //		printf("Rank%d: skip/noskip (%d/%d)\n", comm_rank, skip, noskip);
 
-		for (i = 0; i < TOTALLETTERS; i++)
-		{
-			/*
-			if (char_counter[i])
-				printf("%c : %d\n", ZERO + i, char_counter[i]);
-			*/
-		}
-
 		permute_count = 0;
 		permute_str = malloc(sizeof(char) * str_len + 1);
 		permute_str[str_len] = '\0';
+
+		MPI_Barrier(MPI_COMM_WORLD);
+		if (comm_rank == 0)
+		{
+			timer2 = -MPI_Wtime();
+			unsigned long global_permute_start = 0;
+			unsigned long global_permute_total = permutations;
+			permuteNew(char_counter2, global_permute_start, &global_permute_total, permute_str, 0, str_len, &permute_count, permute_counter_arr2, permute_counter_branch2);
+			timer2 += MPI_Wtime();
+			printf("Non-parallel Rank#%d:  time=%lf total permutations=%lu\n", comm_rank, timer2, permute_count);
+		}
+
+		permute_count = 0;
+
 		MPI_Barrier(MPI_COMM_WORLD);
 		timer1 = -MPI_Wtime();
-		/*
-		if (noskip)
-			permute(char_counter, skip, noskip, permute_str, 0, str_len, &permute_count);
-		*/
-		permuteNew(char_counter, local_permute_start, &local_permute_total, permute_str, 0, str_len, &permute_count, permute_counter_arr, permute_counter_branch);
+
+		permuteNew(char_counter1, local_permute_start, &local_permute_total, permute_str, 0, str_len, &permute_count, permute_counter_arr1, permute_counter_branch1);
 		//MPI_Barrier(MPI_COMM_WORLD);
 		timer1 += MPI_Wtime();
 
@@ -179,12 +192,12 @@ int main(int argc, char ** argv)
 		if (comm_rank == 0)
 		{
 //			for (i = 0; i < str_len; i++)
-//				printf("Final:  Level %i permutations = %lu\n", i, permute_counter_arr[i]);
+//				printf("Final:  Level %i permutations = %lu\n", i, permute_counter_arr1[i]);
 		}
 
 		free(permute_str);
-		free(permute_counter_arr);
-		free(permute_counter_branch);
+		free(permute_counter_arr1);
+		free(permute_counter_branch1);
 		MPI_Barrier(MPI_COMM_WORLD);
 	}
 
