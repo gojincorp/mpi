@@ -1,27 +1,34 @@
+/*
+ * Author:  Eric Yee
+ * Copyright 2017 www.ideasbeyond.com
+ *
+ * This is an exercise on how one might go about parallelizing the task
+ * of creating a lexically sorted permutation of a user supplied set of
+ * alphanumeric characters (case sensitive and including numbers). 
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <mpi.h>
-#define TOTALLETTERS ('z' - '0') 
+#define MAXCHARSET ('z' - '0') // Using a subset of the standard ASCII character set 
 #define ZERO '0'
 #define MAXSTRING 20 
 
-void permute(int * char_set, int skip, int noskip, char * permute_str, int level, int maxLevel, unsigned long * counter);
-void permuteNew(int * char_set, unsigned long local_permute_start, unsigned long * local_permute_total, char * permute_str, int level, int maxLevel, unsigned long * counter, unsigned long * permute_counter_arr1, unsigned long * permute_counter_branch1);
+void permute(int * char_set, unsigned long permute_start, unsigned long * permute_total, char * permute_str, int level,
+		int maxLevel, unsigned long * counter, unsigned long * permute_counter_arr, unsigned long * permute_counter_branch);
 
 int main(int argc, char ** argv)
 {
-	MPI_Status mpi_status;
+	MPI_Status	mpi_status;
 	int		comm_size, comm_rank;
 	char		in_str[MAXSTRING];
-	int		char_counter1[TOTALLETTERS], char_counter2[TOTALLETTERS];
+	int		char_counter1[MAXCHARSET], char_counter2[MAXCHARSET];
 	char		* permute_str;
 	unsigned long	* permute_counter_arr1, * permute_counter_branch1, * permute_counter_arr2, * permute_counter_branch2;
 	int		i, j, temp, str_len;
 	unsigned long	permute_count = 0;
 	double		timer1, timer2;
 	int		total_unique_char;
-	int		skiplevel, skip, noskip;
 	unsigned long	permutations;
 	unsigned long	local_permute_start, local_permute_total;
 
@@ -66,7 +73,7 @@ int main(int argc, char ** argv)
 
 		// Initialize counters
 		permutations = 0;
-		for (i = 0; i < TOTALLETTERS; i++)
+		for (i = 0; i < MAXCHARSET; i++)
 		{
 			char_counter1[i] = 0;
 			char_counter2[i] = 0;
@@ -94,7 +101,7 @@ int main(int argc, char ** argv)
 			char_counter1[in_str[i] - ZERO]++;		
 			char_counter2[in_str[i] - ZERO]++;		
 
-			// Initialize arrays passed to permuteNew() function
+			// Initialize arrays passed to permute() function
 			permute_counter_arr1[i] = 0;
 			permute_counter_branch1[i] = 0;
 			permute_counter_arr2[i] = 0;
@@ -107,7 +114,7 @@ int main(int argc, char ** argv)
 
 		// Need to check for repeated characters and divide permutations accordingly
 		temp = 1;
-		for (i = 0; i < TOTALLETTERS; i++)
+		for (i = 0; i < MAXCHARSET; i++)
 		{
 			if (char_counter1[i] > 1)
 			{
@@ -135,18 +142,7 @@ int main(int argc, char ** argv)
 			local_permute_start = comm_rank * (permutations/comm_size) + (comm_rank < (permutations%comm_size) ? comm_rank : permutations%comm_size);
 			local_permute_total = (permutations/comm_size) + (comm_rank < (permutations%comm_size) ? 1 : 0);
 		}
-/*
-		//local_permute_start = comm_rank * (permutations/comm_size) + (comm_rank < (permutations%comm_size) ? comm_rank : permutations%comm_size);
-		if (permutations/comm_size)
-			local_permute_start = comm_rank * (permutations/comm_size) + (comm_rank < (permutations%comm_size) ? comm_rank : permutations%comm_size);
-		else
-			local_permute_start = (comm_rank < (permutations%comm_size) ? comm_rank : 0);
-		//local_permute_start = comm_rank * (permutations/comm_size) + (comm_rank < (permutations%comm_size) ? comm_rank : 0);
-		if (local_permute_start)
-			local_permute_total = local_permute_start + (permutations/comm_size) + (comm_rank < (permutations%comm_size) ? 1 : 0) - 1;
-		else
-			local_permute_total = 0;
-*/
+
 		MPI_Barrier(MPI_COMM_WORLD);
 		printf("Rank%d permutations: start/end (%d/%d) str_len=%d\n", comm_rank, local_permute_start, local_permute_total, str_len);
 
@@ -154,11 +150,6 @@ int main(int argc, char ** argv)
 		{
 
 		}
-
-		// Calculate skip/noskip per process/rank 
-		skip = comm_rank * (total_unique_char/comm_size) + (comm_rank < (total_unique_char%comm_size) ? comm_rank : 0);
-		noskip = (total_unique_char/comm_size) + (comm_rank < (total_unique_char%comm_size)) ? 1 : 0;
-//		printf("Rank%d: skip/noskip (%d/%d)\n", comm_rank, skip, noskip);
 
 		permute_count = 0;
 		permute_str = malloc(sizeof(char) * str_len + 1);
@@ -170,7 +161,7 @@ int main(int argc, char ** argv)
 			timer2 = -MPI_Wtime();
 			unsigned long global_permute_start = 0;
 			unsigned long global_permute_total = permutations;
-			permuteNew(char_counter2, global_permute_start, &global_permute_total, permute_str, 0, str_len, &permute_count, permute_counter_arr2, permute_counter_branch2);
+			permute(char_counter2, global_permute_start, &global_permute_total, permute_str, 0, str_len, &permute_count, permute_counter_arr2, permute_counter_branch2);
 			timer2 += MPI_Wtime();
 			printf("Non-parallel Rank#%d:  time=%lf total permutations=%lu\n", comm_rank, timer2, permute_count);
 		}
@@ -179,25 +170,17 @@ int main(int argc, char ** argv)
 
 		MPI_Barrier(MPI_COMM_WORLD);
 		timer1 = -MPI_Wtime();
-
-		permuteNew(char_counter1, local_permute_start, &local_permute_total, permute_str, 0, str_len, &permute_count, permute_counter_arr1, permute_counter_branch1);
-		//MPI_Barrier(MPI_COMM_WORLD);
+		permute(char_counter1, local_permute_start, &local_permute_total, permute_str, 0, str_len, &permute_count, permute_counter_arr1, permute_counter_branch1);
 		timer1 += MPI_Wtime();
 
 		MPI_Barrier(MPI_COMM_WORLD);
 		printf("Rank#%d:  time=%lf total permutations=%lu\n", comm_rank, timer1, permute_count);
 
-		MPI_Barrier(MPI_COMM_WORLD);
-
-		if (comm_rank == 0)
-		{
-//			for (i = 0; i < str_len; i++)
-//				printf("Final:  Level %i permutations = %lu\n", i, permute_counter_arr1[i]);
-		}
-
 		free(permute_str);
 		free(permute_counter_arr1);
 		free(permute_counter_branch1);
+		free(permute_counter_arr2);
+		free(permute_counter_branch2);
 		MPI_Barrier(MPI_COMM_WORLD);
 	}
 
@@ -206,7 +189,7 @@ int main(int argc, char ** argv)
 }
 
 
-void permuteNew(int * char_set, unsigned long local_permute_start, unsigned long * local_permute_total, char * permute_str, int level, int maxLevel, unsigned long * counter, unsigned long * permute_counter_arr, unsigned long * permute_counter_branch)
+void permute(int * char_set, unsigned long local_permute_start, unsigned long * local_permute_total, char * permute_str, int level, int maxLevel, unsigned long * counter, unsigned long * permute_counter_arr, unsigned long * permute_counter_branch)
 {
 	int i, j;
 	int comm_rank;
@@ -215,7 +198,7 @@ void permuteNew(int * char_set, unsigned long local_permute_start, unsigned long
 
 if (comm_rank >= 0 && level == 0)
 {
-	printf("Rank#%d calling permuteNew: level=%d | maxLevel=%lu | local_permute_total=%d\n", comm_rank, level, maxLevel, *local_permute_total);	
+	printf("Rank#%d calling permute: level=%d | maxLevel=%lu | local_permute_total=%d\n", comm_rank, level, maxLevel, *local_permute_total);	
 }
 
 	if (!(*local_permute_total))
@@ -225,28 +208,18 @@ if (comm_rank >= 0 && level == 0)
 	{
 		(*counter)++;
 		(*local_permute_total)--;
-if (comm_rank >= 9999)
-{
-		printf("Permute Rank#%d (%lu):\t%s\n", comm_rank, *counter, permute_str);
-		for (i = 0; i <= maxLevel; i++)
-			printf("Rank#%d Level %i permutations = %lu\n", comm_rank, i, permute_counter_arr[i]);
-}
+		//printf("Permute Rank#%d (%lu):\t%s\n", comm_rank, *counter, permute_str);
 	}
 
-	for (i = 0; i < TOTALLETTERS; i++)
+	for (i = 0; i < MAXCHARSET; i++)
 	{
 		if (char_set[i] != 0)
 		{
 			permute_str[level] = ZERO + i;
 
 			permute_counter_branch[level + 1] += permute_counter_branch[level] * char_set[i] / (maxLevel - level);
-			//permute_counter_arr[level + 1] += permute_counter_branch[level] * char_set[i] / (maxLevel - level);
 			permute_counter_arr[level + 1] += permute_counter_branch[level + 1];
 
-if (comm_rank >= 9999)
-	printf("\tRank#%d:  level=%d, i=%d, char_set[i]=%d, char=%c | %lu/%lu\n", comm_rank, level, i, char_set[i], permute_str[level], local_permute_start, permute_counter_arr[level + 1]);
-
-			//if (local_permute_start <= permute_counter_arr[level + 1] && local_permute_total >= permute_counter_arr[level + 1])
 			if (local_permute_start >= permute_counter_arr[level + 1])
 			{
 				for (j = level + 2; j <= maxLevel; j++)
@@ -255,43 +228,11 @@ if (comm_rank >= 9999)
 			else
 			{	 
 				char_set[i]--;
-				permuteNew(char_set, local_permute_start, local_permute_total, permute_str, level + 1, maxLevel, counter, permute_counter_arr, permute_counter_branch);
+				permute(char_set, local_permute_start, local_permute_total, permute_str, level + 1, maxLevel, counter, permute_counter_arr, permute_counter_branch);
 				char_set[i]++;
 			}
 
 			permute_counter_branch[level + 1] -= permute_counter_branch[level] * char_set[i] / (maxLevel - level);
-		}
-	} 
-}	
-
-void permute(int * char_set, int skip, int noskip, char * permute_str, int level, int maxLevel, unsigned long * counter)
-{
-	int i;
-	int comm_rank;
-	double timer0;
-	MPI_Comm_rank(MPI_COMM_WORLD, &comm_rank);
-
-	if (level == maxLevel)
-	{
-		(*counter)++;
-		//printf("Permute Rank#%d (%lu):\t%s\n", comm_rank, *counter, permute_str);
-	}
-	
-	for (i = 0; i < TOTALLETTERS; i++)
-	{
-		if (char_set[i] != 0)
-		{
-			if (!level && skip-- > 0)
-				continue;
-
-			if (level || noskip-- > 0)
-			{
-				permute_str[level] = ZERO + i;
-				char_set[i]--;
-
-				permute(char_set, 0, 0, permute_str, level + 1, maxLevel, counter);
-				char_set[i]++;
-			}
 		}
 	} 
 }	
