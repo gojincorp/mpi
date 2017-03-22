@@ -108,7 +108,7 @@ int main(int argc, char ** argv)
 
 		// Generate random characters
 		if (comm_rank == 0) {
-			rand_str = (char *) malloc((sizeof(char) + 1) * rand_str_len);
+			rand_str = (char *) malloc(sizeof(char) * (rand_str_len + 1));
 			rand_string(rand_str, rand_str_len);
 			printf("The random %d characters are:  %s\n", rand_str_len, rand_str); 
 		}
